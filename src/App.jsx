@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react'
 import { supabase } from './lib/supabaseClient'
-import { Plus, Trash2, Edit2, DollarSign, Calendar, FileText, CheckCircle, XCircle } from 'lucide-react'
+import { Plus, Trash2, Edit2, DollarSign, Calendar, FileText, CheckCircle, XCircle, Copy } from 'lucide-react'
+import MonthlyChart from './components/MonthlyChart'
+import MonthlySummary from './components/MonthlySummary'
+import PlannedExpenses from './components/PlannedExpenses'
+import RiskManagement from './components/RiskManagement'
 import './App.css'
 
 function App() {
@@ -8,6 +12,10 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editingExpense, setEditingExpense] = useState(null)
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear())
+  const [sortConfig, setSortConfig] = useState({ key: 'created_at', direction: 'desc' })
+  const [selectedExpenses, setSelectedExpenses] = useState([])
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [formData, setFormData] = useState({
     item: '',
     obs: '',
@@ -73,19 +81,97 @@ function App() {
   }
 
   async function handleDelete(id) {
-    if (!confirm('Tem certeza que deseja excluir esta despesa?')) return
+    console.log('Delete clicked for ID:', id)
 
+    const confirmed = confirm('Tem certeza que deseja excluir esta despesa?')
+    console.log('User confirmed:', confirmed)
+
+    if (!confirmed) return
+
+    try {
+      console.log('Attempting to delete expense with ID:', id)
+
+      const { data, error } = await supabase
+        .from('expenses')
+        .delete()
+        .eq('id', id)
+        .select()
+
+      console.log('Delete response:', { data, error })
+
+      if (error) {
+        console.error('Supabase error:', error)
+        throw error
+      }
+
+      console.log('Delete successful, refreshing expenses')
+      await fetchExpenses()
+      alert('Despesa excluída com sucesso!')
+    } catch (error) {
+      console.error('Error deleting expense:', error)
+      alert(`Erro ao excluir despesa: ${error.message}`)
+    }
+  }
+
+  async function handleBulkDelete() {
+    if (selectedExpenses.length === 0) {
+      alert('Selecione pelo menos uma despesa para excluir.')
+      return
+    }
+
+    setShowDeleteConfirm(true)
+  }
+
+  async function confirmBulkDelete() {
     try {
       const { error } = await supabase
         .from('expenses')
         .delete()
-        .eq('id', id)
+        .in('id', selectedExpenses)
+
+      if (error) throw error
+
+      setSelectedExpenses([])
+      setShowDeleteConfirm(false)
+      await fetchExpenses()
+      alert(`${selectedExpenses.length} despesa(s) excluída(s) com sucesso!`)
+    } catch (error) {
+      console.error('Error deleting expenses:', error)
+      alert(`Erro ao excluir despesas: ${error.message}`)
+    }
+  }
+
+  function toggleSelectExpense(id) {
+    setSelectedExpenses(prev =>
+      prev.includes(id)
+        ? prev.filter(expId => expId !== id)
+        : [...prev, id]
+    )
+  }
+
+  function toggleSelectAll() {
+    if (selectedExpenses.length === sortedExpenses.length) {
+      setSelectedExpenses([])
+    } else {
+      setSelectedExpenses(sortedExpenses.map(exp => exp.id))
+    }
+  }
+
+  async function handleDuplicate(expense) {
+    try {
+      // Create a copy without the id and created_at fields
+      const { id, created_at, ...expenseData } = expense
+
+      const { error } = await supabase
+        .from('expenses')
+        .insert([expenseData])
 
       if (error) throw error
       fetchExpenses()
+      alert('Despesa duplicada com sucesso!')
     } catch (error) {
-      console.error('Error deleting expense:', error)
-      alert('Erro ao excluir despesa.')
+      console.error('Error duplicating expense:', error)
+      alert('Erro ao duplicar despesa.')
     }
   }
 
@@ -141,9 +227,53 @@ function App() {
     setShowModal(true)
   }
 
-  const totalExpenses = expenses.reduce((sum, exp) => sum + (parseFloat(exp.value) || 0), 0)
-  const paidExpenses = expenses.filter(exp => exp.status).length
-  const pendingExpenses = expenses.filter(exp => !exp.status).length
+  function handleSort(key) {
+    let direction = 'asc'
+    if (sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc'
+    }
+    setSortConfig({ key, direction })
+  }
+
+  // Filter regular expenses (not planned, not risk items)
+  const regularExpenses = expenses.filter(exp => !exp.is_planned && !exp.is_risk_item)
+
+  // Sort expenses
+  const sortedExpenses = [...regularExpenses].sort((a, b) => {
+    let aValue = a[sortConfig.key]
+    let bValue = b[sortConfig.key]
+
+    // Handle different data types
+    if (sortConfig.key === 'value') {
+      aValue = parseFloat(aValue) || 0
+      bValue = parseFloat(bValue) || 0
+    } else if (sortConfig.key === 'month' || sortConfig.key === 'year') {
+      aValue = parseInt(aValue) || 0
+      bValue = parseInt(bValue) || 0
+    } else if (sortConfig.key === 'status') {
+      aValue = aValue ? 1 : 0
+      bValue = bValue ? 1 : 0
+    } else {
+      aValue = String(aValue || '').toLowerCase()
+      bValue = String(bValue || '').toLowerCase()
+    }
+
+    if (aValue < bValue) {
+      return sortConfig.direction === 'asc' ? -1 : 1
+    }
+    if (aValue > bValue) {
+      return sortConfig.direction === 'asc' ? 1 : -1
+    }
+    return 0
+  })
+
+  const totalExpenses = regularExpenses.reduce((sum, exp) => sum + (parseFloat(exp.value) || 0), 0)
+  const paidExpenses = regularExpenses.filter(exp => exp.status).length
+  const pendingExpenses = regularExpenses.filter(exp => !exp.status).length
+
+  // Get available years from expenses
+  const availableYears = [...new Set(expenses.map(exp => exp.year))].sort((a, b) => b - a)
+  if (availableYears.length === 0) availableYears.push(new Date().getFullYear())
 
   return (
     <div className="app">
@@ -155,6 +285,21 @@ function App() {
       </header>
 
       <main className="main">
+        {/* Year Selector */}
+        <div className="year-selector-container">
+          <label htmlFor="year-select">Ano:</label>
+          <select
+            id="year-select"
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(parseInt(e.target.value))}
+            className="year-select"
+          >
+            {availableYears.map(year => (
+              <option key={year} value={year}>{year}</option>
+            ))}
+          </select>
+        </div>
+
         <div className="stats-grid">
           <div className="stat-card">
             <div className="stat-icon" style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
@@ -162,7 +307,7 @@ function App() {
             </div>
             <div className="stat-content">
               <p className="stat-label">Total de Despesas</p>
-              <p className="stat-value">R$ {totalExpenses.toFixed(2)}</p>
+              <p className="stat-value">R$ {totalExpenses.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
             </div>
           </div>
 
@@ -172,7 +317,7 @@ function App() {
             </div>
             <div className="stat-content">
               <p className="stat-label">Total de Registros</p>
-              <p className="stat-value">{expenses.length}</p>
+              <p className="stat-value">{regularExpenses.length}</p>
             </div>
           </div>
 
@@ -197,13 +342,27 @@ function App() {
           </div>
         </div>
 
+        {/* Visualizations Section */}
+        <div className="visualizations-grid">
+          <MonthlyChart expenses={expenses} year={selectedYear} />
+          <MonthlySummary expenses={expenses} year={selectedYear} />
+        </div>
+
         <div className="table-container">
           <div className="table-header">
             <h2>Despesas Registradas</h2>
-            <button className="btn-primary" onClick={openNewModal}>
-              <Plus size={20} />
-              Nova Despesa
-            </button>
+            <div className="header-actions">
+              {selectedExpenses.length > 0 && (
+                <button className="btn-danger" onClick={handleBulkDelete}>
+                  <Trash2 size={20} />
+                  Excluir Selecionadas ({selectedExpenses.length})
+                </button>
+              )}
+              <button className="btn-primary" onClick={openNewModal}>
+                <Plus size={20} />
+                Nova Despesa
+              </button>
+            </div>
           </div>
 
           {loading ? (
@@ -221,19 +380,46 @@ function App() {
               <table className="expenses-table">
                 <thead>
                   <tr>
-                    <th>Status</th>
-                    <th>Item</th>
-                    <th>Valor</th>
-                    <th>Periodicidade</th>
-                    <th>Mês/Ano</th>
-                    <th>Data Manutenção</th>
+                    <th style={{ width: '50px' }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedExpenses.length === sortedExpenses.length && sortedExpenses.length > 0}
+                        onChange={toggleSelectAll}
+                        title="Selecionar todas"
+                      />
+                    </th>
+                    <th onClick={() => handleSort('status')} className="sortable">
+                      Status {sortConfig.key === 'status' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th onClick={() => handleSort('item')} className="sortable">
+                      Item {sortConfig.key === 'item' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th onClick={() => handleSort('value')} className="sortable">
+                      Valor {sortConfig.key === 'value' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th onClick={() => handleSort('periodicity')} className="sortable">
+                      Periodicidade {sortConfig.key === 'periodicity' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th onClick={() => handleSort('month')} className="sortable">
+                      Mês/Ano {sortConfig.key === 'month' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
+                    <th onClick={() => handleSort('maintenance_date')} className="sortable">
+                      Data Manutenção {sortConfig.key === 'maintenance_date' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    </th>
                     <th>Observações</th>
                     <th>Ações</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {expenses.map((expense) => (
-                    <tr key={expense.id}>
+                  {sortedExpenses.map((expense) => (
+                    <tr key={expense.id} className={selectedExpenses.includes(expense.id) ? 'selected' : ''}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={selectedExpenses.includes(expense.id)}
+                          onChange={() => toggleSelectExpense(expense.id)}
+                        />
+                      </td>
                       <td>
                         <button
                           className={`status-badge ${expense.status ? 'paid' : 'pending'}`}
@@ -243,7 +429,7 @@ function App() {
                         </button>
                       </td>
                       <td className="item-cell">{expense.item}</td>
-                      <td className="value-cell">R$ {parseFloat(expense.value || 0).toFixed(2)}</td>
+                      <td className="value-cell">R$ {parseFloat(expense.value || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                       <td>{expense.periodicity || '-'}</td>
                       <td>{expense.month}/{expense.year}</td>
                       <td>{expense.maintenance_date ? new Date(expense.maintenance_date).toLocaleDateString('pt-BR') : '-'}</td>
@@ -252,6 +438,9 @@ function App() {
                         <div className="action-buttons">
                           <button className="btn-icon" onClick={() => openEditModal(expense)} title="Editar">
                             <Edit2 size={16} />
+                          </button>
+                          <button className="btn-icon duplicate" onClick={() => handleDuplicate(expense)} title="Duplicar">
+                            <Copy size={16} />
                           </button>
                           <button className="btn-icon danger" onClick={() => handleDelete(expense.id)} title="Excluir">
                             <Trash2 size={16} />
@@ -265,6 +454,10 @@ function App() {
             </div>
           )}
         </div>
+
+        {/* Additional Sections */}
+        <PlannedExpenses expenses={expenses} onRefresh={fetchExpenses} />
+        <RiskManagement expenses={expenses} onRefresh={fetchExpenses} />
       </main>
 
       {showModal && (
@@ -397,6 +590,32 @@ function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="modal-overlay" onClick={() => setShowDeleteConfirm(false)}>
+          <div className="modal small-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>⚠️ Confirmar Exclusão</h3>
+              <button className="btn-close" onClick={() => setShowDeleteConfirm(false)}>×</button>
+            </div>
+
+            <div className="modal-content">
+              <p>Tem certeza que deseja excluir <strong>{selectedExpenses.length}</strong> despesa(s) selecionada(s)?</p>
+              <p className="warning-text">Esta ação não pode ser desfeita.</p>
+            </div>
+
+            <div className="modal-actions">
+              <button type="button" className="btn-secondary" onClick={() => setShowDeleteConfirm(false)}>
+                Cancelar
+              </button>
+              <button type="button" className="btn-danger" onClick={confirmBulkDelete}>
+                Sim, Excluir
+              </button>
+            </div>
           </div>
         </div>
       )}

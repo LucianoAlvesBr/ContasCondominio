@@ -11,6 +11,10 @@ create table public.expenses (
   month int,
   year int,
   status boolean default false,
+  is_planned boolean default false,
+  is_risk_item boolean default false,
+  risk_type text,
+  deadline date,
   created_at timestamptz default now()
 );
 
